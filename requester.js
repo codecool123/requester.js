@@ -133,33 +133,40 @@ class Requester {
     const notifOptions = {
       body: text,
       icon: attachment,
-      ...options
+      badge: options.badge,
+      tag: options.tag,
+      data: options.data,
+      requireInteraction: options.requireInteraction,
+      silent: options.silent
     };
 
-    // Handle buttons (actions)
-    if (options.buttons && Array.isArray(options.buttons)) {
-      notifOptions.actions = options.buttons.map((btn, idx) => ({
-        action: `action-${idx}`,
-        title: btn.label || btn
-      }));
+    // Note: The basic Notification API doesn't support action buttons
+    // Action buttons require Service Workers and showNotification()
+    if (options.buttons && options.buttons.length > 0) {
+      console.warn('Requester.js: Action buttons are not supported with the basic Notification API. Use Service Workers for button support. Only the main notification click handler will work.');
     }
 
     const notification = new Notification(title, notifOptions);
 
-    // Handle button clicks
-    if (options.buttons) {
-      notification.onclick = (e) => {
-        const actionIndex = parseInt(e.action?.split('-')[1]);
-        const button = options.buttons[actionIndex];
-        if (button && typeof button.onClick === 'function') {
-          button.onClick(e);
-        } else if (options.onClick) {
-          options.onClick(e);
-        }
-      };
-    } else if (options.onClick) {
-      notification.onclick = options.onClick;
-    }
+    // Handle notification click
+    notification.onclick = (e) => {
+      if (options.onClick) {
+        options.onClick(e);
+      }
+      notification.close();
+    };
+
+    notification.onclose = (e) => {
+      if (options.onClose) {
+        options.onClose(e);
+      }
+    };
+
+    notification.onerror = (e) => {
+      if (options.onError) {
+        options.onError(e);
+      }
+    };
 
     return notification;
   }
@@ -578,14 +585,18 @@ class Requester {
         return this._handleResponse(false, null, error);
       }
 
-      const requestOptions = {
-        filters: options.filters || [],
-        optionalServices: options.optionalServices || []
-      };
+      const requestOptions = {};
 
       // If no filters provided, accept all devices
-      if (requestOptions.filters.length === 0) {
+      if (!options.filters || options.filters.length === 0) {
         requestOptions.acceptAllDevices = true;
+      } else {
+        requestOptions.filters = options.filters;
+      }
+
+      // Add optional services if provided
+      if (options.optionalServices && options.optionalServices.length > 0) {
+        requestOptions.optionalServices = options.optionalServices;
       }
 
       const device = await navigator.bluetooth.requestDevice(requestOptions);
