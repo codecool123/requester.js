@@ -23,7 +23,9 @@ class Requester {
       },
       onAccept: null,
       onDecline: null,
-      onError: null
+      onError: null,
+      useServiceWorker: false,
+      serviceWorkerPath: '/requester-sw.js'
     };
     
     this.activeStreams = {
@@ -31,6 +33,10 @@ class Requester {
       microphone: null,
       screen: null
     };
+
+    this.serviceWorkerRegistration = null;
+    this.notificationCallbacks = new Map();
+    this._setupServiceWorkerMessageListener();
   }
 
   /**
@@ -41,6 +47,68 @@ class Requester {
     this.settings = { ...this.settings, ...options };
     if (options.errorPopupStyle) {
       this.settings.errorPopupStyle = { ...this.settings.errorPopupStyle, ...options.errorPopupStyle };
+    }
+  }
+
+  /**
+   * Setup Service Worker message listener
+   * @private
+   */
+  _setupServiceWorkerMessageListener() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        const { type, tag, action } = event.data;
+        const callbacks = this.notificationCallbacks.get(tag);
+
+        if (!callbacks) return;
+
+        switch (type) {
+          case 'NOTIFICATION_ACTION_CLICKED':
+            const button = callbacks.buttons?.find(btn => btn.action === action);
+            if (button && button.onClick) {
+              button.onClick();
+            }
+            break;
+          case 'NOTIFICATION_CLICKED':
+            if (callbacks.onClick) {
+              callbacks.onClick();
+            }
+            break;
+          case 'NOTIFICATION_CLOSED':
+            if (callbacks.onClose) {
+              callbacks.onClose();
+            }
+            this.notificationCallbacks.delete(tag);
+            break;
+        }
+      });
+    }
+  }
+
+  /**
+   * Register Service Worker for advanced notification features
+   * @returns {Promise<ServiceWorkerRegistration>}
+   */
+  async registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) {
+      throw new Error('Service Workers are not supported in this browser');
+    }
+
+    try {
+      this.serviceWorkerRegistration = await navigator.serviceWorker.register(
+        this.settings.serviceWorkerPath
+      );
+      
+      // Wait for service worker to be ready
+      await navigator.serviceWorker.ready;
+      
+      this.settings.useServiceWorker = true;
+      console.log('Requester.js: Service Worker registered successfully');
+      
+      return this.serviceWorkerRegistration;
+    } catch (error) {
+      console.error('Requester.js: Service Worker registration failed:', error);
+      throw error;
     }
   }
 
@@ -122,14 +190,101 @@ class Requester {
    * @param {string} text - Notification body
    * @param {string} attachment - Icon URL (optional)
    * @param {Object} options - Notification options (buttons, onClick, onClose, etc.)
-   * @returns {Notification|null}
+   * @returns {Notification|Promise<void>|null}
    */
-  sendNotification(title, text, attachment = null, options = {}) {
+  async sendNotification(title, text, attachment = null, options = {}) {
     if (Notification.permission !== 'granted') {
       this._showError('Notification permission not granted');
       return null;
     }
 
+    // Check if buttons are requested
+    const hasButtons = options.buttons && options.buttons.length > 0;
+
+    // If buttons are requested but SW not registered, try to use SW anyway or warn
+    if (hasButtons && !this.settings.useServiceWorker) {
+      console.warn('Requester.js: Buttons requested but Service Worker not registered. Sending notification without buttons. Call registerServiceWorker() first for button support.');
+      // Remove buttons from options to prevent error
+      const optionsWithoutButtons = { ...options };
+      delete optionsWithoutButtons.buttons;
+      return this._sendBasicNotification(title, text, attachment, optionsWithoutButtons);
+    }
+
+    // Use Service Worker for notifications with buttons
+    if (this.settings.useServiceWorker && this.serviceWorkerRegistration && hasButtons) {
+      return this._sendServiceWorkerNotification(title, text, attachment, options);
+    }
+
+    // Use basic Notification API
+    return this._sendBasicNotification(title, text, attachment, options);
+  }
+
+  /**
+   * Send notification using Service Worker (supports buttons)
+   * @private
+   */
+  async _sendServiceWorkerNotification(title, text, attachment, options) {
+    try {
+      const tag = options.tag || `notification-${Date.now()}`;
+      
+      const notifOptions = {
+        body: text,
+        icon: attachment,
+        tag: tag,
+        badge: options.badge,
+        image: options.image,
+        data: options.data,
+        requireInteraction: options.requireInteraction,
+        silent: options.silent,
+        vibrate: options.vibrate
+      };
+
+      // Add action buttons
+      if (options.buttons && options.buttons.length > 0) {
+        notifOptions.actions = options.buttons.map((btn, idx) => ({
+          action: btn.action || `action-${idx}`,
+          title: btn.label || btn.title || `Button ${idx + 1}`,
+          icon: btn.icon
+        }));
+
+        // Store callbacks with action references
+        const callbackData = {
+          buttons: options.buttons.map((btn, idx) => ({
+            action: btn.action || `action-${idx}`,
+            onClick: btn.onClick
+          })),
+          onClick: options.onClick,
+          onClose: options.onClose
+        };
+
+        this.notificationCallbacks.set(tag, callbackData);
+
+        // Send callbacks info to service worker
+        this.serviceWorkerRegistration.active.postMessage({
+          type: 'STORE_NOTIFICATION_CALLBACKS',
+          tag: tag,
+          callbacks: callbackData
+        });
+      }
+
+      // Show notification via service worker
+      await this.serviceWorkerRegistration.showNotification(title, notifOptions);
+      
+      return { tag, registration: this.serviceWorkerRegistration };
+    } catch (error) {
+      this._showError(`Failed to create notification: ${error.message}`);
+      if (options.onError) {
+        options.onError(error);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Send basic notification (no buttons)
+   * @private
+   */
+  _sendBasicNotification(title, text, attachment, options) {
     // List of properties that are NOT part of the Notification constructor
     const nonNotificationProps = ['buttons', 'onClick', 'onClose', 'onError'];
 
@@ -150,9 +305,9 @@ class Requester {
     delete notifOptions.actions;
     delete notifOptions.buttons;
 
-    // Note: The basic Notification API doesn't support action buttons
+    // Warn about buttons without service worker
     if (options.buttons && options.buttons.length > 0) {
-      console.warn('Requester.js: Action buttons are not supported with the basic Notification API. Use Service Workers for button support. Only the main notification click handler will work.');
+      console.warn('Requester.js: Action buttons require Service Worker. Call registerServiceWorker() first, or buttons will be ignored.');
     }
 
     try {
