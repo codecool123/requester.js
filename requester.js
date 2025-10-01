@@ -130,15 +130,23 @@ class Requester {
       return null;
     }
 
+    // Only include supported properties for basic Notification API
     const notifOptions = {
       body: text,
-      icon: attachment,
-      badge: options.badge,
-      tag: options.tag,
-      data: options.data,
-      requireInteraction: options.requireInteraction,
-      silent: options.silent
+      icon: attachment
     };
+
+    // Add optional supported properties if provided
+    if (options.badge) notifOptions.badge = options.badge;
+    if (options.tag) notifOptions.tag = options.tag;
+    if (options.data) notifOptions.data = options.data;
+    if (options.image) notifOptions.image = options.image;
+    if (options.lang) notifOptions.lang = options.lang;
+    if (options.dir) notifOptions.dir = options.dir;
+    if (options.vibrate) notifOptions.vibrate = options.vibrate;
+    if (options.renotify !== undefined) notifOptions.renotify = options.renotify;
+    if (options.requireInteraction !== undefined) notifOptions.requireInteraction = options.requireInteraction;
+    if (options.silent !== undefined) notifOptions.silent = options.silent;
 
     // Note: The basic Notification API doesn't support action buttons
     // Action buttons require Service Workers and showNotification()
@@ -146,29 +154,37 @@ class Requester {
       console.warn('Requester.js: Action buttons are not supported with the basic Notification API. Use Service Workers for button support. Only the main notification click handler will work.');
     }
 
-    const notification = new Notification(title, notifOptions);
+    try {
+      const notification = new Notification(title, notifOptions);
 
-    // Handle notification click
-    notification.onclick = (e) => {
-      if (options.onClick) {
-        options.onClick(e);
-      }
-      notification.close();
-    };
+      // Handle notification click
+      notification.onclick = (e) => {
+        if (options.onClick) {
+          options.onClick(e);
+        }
+        notification.close();
+      };
 
-    notification.onclose = (e) => {
-      if (options.onClose) {
-        options.onClose(e);
-      }
-    };
+      notification.onclose = (e) => {
+        if (options.onClose) {
+          options.onClose(e);
+        }
+      };
 
-    notification.onerror = (e) => {
+      notification.onerror = (e) => {
+        if (options.onError) {
+          options.onError(e);
+        }
+      };
+
+      return notification;
+    } catch (error) {
+      this._showError(`Failed to create notification: ${error.message}`);
       if (options.onError) {
-        options.onError(e);
+        options.onError(error);
       }
-    };
-
-    return notification;
+      return null;
+    }
   }
 
   // ========== CAMERA ==========
@@ -579,7 +595,15 @@ class Requester {
   async requestBluetooth(options = {}) {
     try {
       if (!navigator.bluetooth) {
-        const error = 'Web Bluetooth not supported';
+        const error = 'Web Bluetooth not supported in this browser';
+        this._showError(error);
+        if (options.onDecline) options.onDecline(error);
+        return this._handleResponse(false, null, error);
+      }
+
+      // Check if bluetooth is available (requires HTTPS)
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+        const error = 'Web Bluetooth requires HTTPS';
         this._showError(error);
         if (options.onDecline) options.onDecline(error);
         return this._handleResponse(false, null, error);
@@ -604,7 +628,10 @@ class Requester {
       if (options.onAccept) options.onAccept(device);
       return this._handleResponse(true, device);
     } catch (error) {
-      this._showError(`Bluetooth access denied: ${error.message}`);
+      const errorMsg = error.message.includes('permissions policy') 
+        ? 'Bluetooth access blocked by permissions policy. This requires HTTPS and proper permissions.'
+        : `Bluetooth access denied: ${error.message}`;
+      this._showError(errorMsg);
       if (options.onDecline) options.onDecline(error);
       return this._handleResponse(false, null, error);
     }
