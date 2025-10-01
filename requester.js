@@ -1,6 +1,6 @@
 /**
  * Requester.js - A comprehensive library for handling browser permissions and device access
- * @version 1.0.0
+ * @version 2.0.0 - Now with Service Worker support for notification buttons!
  */
 
 class Requester {
@@ -304,11 +304,6 @@ class Requester {
     // Explicitly remove actions if it somehow got through
     delete notifOptions.actions;
     delete notifOptions.buttons;
-
-    // Warn about buttons without service worker
-    if (options.buttons && options.buttons.length > 0) {
-      console.warn('Requester.js: Action buttons require Service Worker. Call registerServiceWorker() first, or buttons will be ignored.');
-    }
 
     try {
       const notification = new Notification(title, notifOptions);
