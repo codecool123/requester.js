@@ -121,7 +121,7 @@ class Requester {
    * @param {string} title - Notification title
    * @param {string} text - Notification body
    * @param {string} attachment - Icon URL (optional)
-   * @param {Object} options - Notification options including buttons
+   * @param {Object} options - Notification options (buttons, onClick, onClose, etc.)
    * @returns {Notification|null}
    */
   sendNotification(title, text, attachment = null, options = {}) {
@@ -130,26 +130,27 @@ class Requester {
       return null;
     }
 
+    // List of properties that are NOT part of the Notification constructor
+    const nonNotificationProps = ['buttons', 'onClick', 'onClose', 'onError'];
+
     // Only include supported properties for basic Notification API
     const notifOptions = {
       body: text,
       icon: attachment
     };
 
-    // Add optional supported properties if provided
-    if (options.badge) notifOptions.badge = options.badge;
-    if (options.tag) notifOptions.tag = options.tag;
-    if (options.data) notifOptions.data = options.data;
-    if (options.image) notifOptions.image = options.image;
-    if (options.lang) notifOptions.lang = options.lang;
-    if (options.dir) notifOptions.dir = options.dir;
-    if (options.vibrate) notifOptions.vibrate = options.vibrate;
-    if (options.renotify !== undefined) notifOptions.renotify = options.renotify;
-    if (options.requireInteraction !== undefined) notifOptions.requireInteraction = options.requireInteraction;
-    if (options.silent !== undefined) notifOptions.silent = options.silent;
+    // Add optional supported properties if provided (excluding callbacks and buttons)
+    for (const key in options) {
+      if (options.hasOwnProperty(key) && !nonNotificationProps.includes(key)) {
+        notifOptions[key] = options[key];
+      }
+    }
+
+    // Explicitly remove actions if it somehow got through
+    delete notifOptions.actions;
+    delete notifOptions.buttons;
 
     // Note: The basic Notification API doesn't support action buttons
-    // Action buttons require Service Workers and showNotification()
     if (options.buttons && options.buttons.length > 0) {
       console.warn('Requester.js: Action buttons are not supported with the basic Notification API. Use Service Workers for button support. Only the main notification click handler will work.');
     }
